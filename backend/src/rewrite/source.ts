@@ -28,6 +28,35 @@ export function extractSource(html: string, url: string): Source {
     return { url, title: String(meta('og:title') || data?.headline || read?.title || doc.title).slice(0,240), siteName: String(meta('og:site_name') || data?.publisher?.name || read?.siteName || new URL(url).hostname).slice(0,160), author: typeof author === 'string' ? author.slice(0,160) : null, publishedAt: date && Number.isFinite(Date.parse(date)) ? new Date(date).toISOString() : null, text, imageUrl, imageCaption, imageCredit };
   } finally { dom.window.close(); }
 }
+function markdownText(value: string) {
+  return value
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+    .replace(/^#{1,6}\s+/gm, '')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/[*_~`>]/g, '')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+export function extractReaderSource(payload: string, expectedUrl: string): Source {
+  let response: any;
+  try { response = JSON.parse(payload); } catch { throw new NewsError(422, 'O leitor alternativo devolveu uma resposta inválida. Cole o texto manualmente.'); }
+  const data=response?.data, url=normalizeSourceUrl(expectedUrl);
+  if(response?.code!==200||!data||typeof data.title!=='string'||typeof data.content!=='string'||typeof data.url!=='string'||normalizeSourceUrl(data.url)!==url) throw new NewsError(422,'O leitor alternativo não conseguiu validar a matéria. Cole o texto manualmente.');
+  const lines=data.content.replace(/\r/g,'').split('\n'),heading=lines.findIndex((line:string)=>/^#\s+\S/.test(line));
+  if(heading<0)throw new NewsError(422,'O leitor alternativo não encontrou a matéria completa. Cole o texto manualmente.');
+  const stop=lines.findIndex((line:string,index:number)=>index>heading&&/^#{2,3}\s+(?:💬\s*)?(?:Fale com os jornalistas|Compartilhe|Notícias Relacionadas|Notícias mais buscadas|Últimas Notícias)\b/i.test(line));
+  const article=lines.slice(heading+1,stop>heading?stop:undefined),byline=article.find((line:string)=>/^.{1,160}?\s+-\s+\d{2}\/\d{2}\/\d{4}\s+-\s+\d{2}:\d{2}\s*$/.test(line.trim()));
+  const match=byline?.trim().match(/^(.{1,160}?)\s+-\s+(\d{2})\/(\d{2})\/(\d{4})\s+-\s+(\d{2}):(\d{2})\s*$/);
+  const publishedAt=match?new Date(`${match[4]}-${match[3]}-${match[2]}T${match[5]}:${match[6]}:00-04:00`).toISOString():null;
+  const imageLine=article.find((line:string)=>/!\[[^\]]*\]\(https?:\/\//.test(line)),imageMatch=imageLine?.match(/!\[(?:Image \d+:\s*)?([^\]]*)\]\((https?:\/\/[^)\s]+)(?:\s+"[^"]*")?\)/);
+  let imageUrl:string|null=null;
+  if(imageMatch){try{const parsed=new URL(imageMatch[2]);if(['http:','https:'].includes(parsed.protocol)&&!parsed.username&&!parsed.password)imageUrl=parsed.href;}catch{}}
+  const text=markdownText(article.filter((line:string)=>line!==byline).join('\n'));
+  if(text.length<150)throw new NewsError(422,'O leitor alternativo não encontrou uma matéria completa. Cole o texto manualmente.');
+  return {url,title:data.title.trim().slice(0,240),siteName:'Midiamax',author:match?.[1]?.trim()||null,publishedAt,text,imageUrl,imageCredit:null,imageCaption:imageMatch?.[1]?.trim().slice(0,500)||null};
+}
 export function creditsHtml(source: Source) {
   const author = source.author ? `, por ${escapeHtml(source.author)}` : '';
   const date = source.publishedAt ? `, publicada em ${new Date(source.publishedAt).toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' })}` : '';

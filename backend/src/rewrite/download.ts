@@ -15,21 +15,25 @@ export function isPublicAddress(address: string) {
   return family === 4 ? !blocked.check(address,'ipv4') : family === 6 && ipv6Global.check(address,'ipv6') && !blocked.check(address,'ipv6');
 }
 export type Download = { bytes: Buffer; url: string; type: string };
-export async function downloadPublic(value: string, kind: 'html' | 'image', resolver = lookup): Promise<Download> {
+export type DownloadKind = 'html' | 'image' | 'reader';
+export async function downloadPublic(value: string, kind: DownloadKind, resolver = lookup): Promise<Download> {
   let current = normalizeSourceUrl(value);
   for (let redirect=0;redirect<5;redirect++) {
     const url = new URL(current), hostname = url.hostname.replace(/^\[|\]$/g,'');
     let addresses: { address: string; family: number }[];
     try { addresses = isIP(hostname) ? [{address:hostname,family:isIP(hostname)}] : await resolver(hostname,{all:true}); } catch { throw new NewsError(422,'Não foi possível localizar o site de origem.'); }
     if (!addresses.length || addresses.some(a=>!isPublicAddress(a.address))) throw new NewsError(400,'Endereços internos ou reservados não podem ser acessados.');
-    const selected=addresses[0], max = kind==='html' ? 2*1024*1024 : 5*1024*1024;
+    const selected=addresses[0], max = kind==='image' ? 5*1024*1024 : 2*1024*1024;
     const response = await new Promise<{ bytes: Buffer; location?: string; type: string; status: number }>((resolve,reject)=>{
-      const abort=AbortSignal.timeout(20000);
-      const request=(url.protocol==='https:'?httpsRequest:httpRequest)(url,{agent:false,family:selected.family,signal:abort,headers:{'User-Agent':'Informe67/1.0 (editorial article preview)','Accept':kind==='html'?'text/html,application/xhtml+xml':'image/jpeg,image/png,image/webp','Accept-Encoding':'identity'},lookup:((_host:unknown,options:any,callback:any)=>options.all?callback(null,[selected]):callback(null,selected.address,selected.family)) as any},response=>{
+      const abort=AbortSignal.timeout(kind==='reader'?60000:20000);
+      const accept=kind==='html'?'text/html,application/xhtml+xml':kind==='image'?'image/jpeg,image/png,image/webp':'application/json';
+      const headers:Record<string,string>={'User-Agent':'Informe67/1.0 (editorial article preview)','Accept':accept,'Accept-Encoding':'identity'};
+      if(kind==='reader'){headers['X-Engine']='browser';headers['X-No-Cache']='true';}
+      const request=(url.protocol==='https:'?httpsRequest:httpRequest)(url,{agent:false,family:selected.family,signal:abort,headers,lookup:((_host:unknown,options:any,callback:any)=>options.all?callback(null,[selected]):callback(null,selected.address,selected.family)) as any},response=>{
         const status=response.statusCode||0,type=String(response.headers['content-type']||'').toLowerCase();
         if([301,302,303,307,308].includes(status)){response.resume();resolve({bytes:Buffer.alloc(0),location:response.headers.location,type,status});return;}
         if(status!==200){response.destroy();reject(new NewsError(422,'O site de origem bloqueou o acesso ou a página não está disponível. Cole o texto manualmente.'));return;}
-        if((kind==='html'&&!/^(text\/html|application\/xhtml\+xml)/.test(type))||(kind==='image'&&!/^image\/(jpeg|png|webp)(?:;|$)/.test(type))||Number(response.headers['content-length']||0)>max){response.destroy();reject(new NewsError(413,'Formato não suportado ou arquivo muito grande na origem.'));return;}
+        if((kind==='html'&&!/^(text\/html|application\/xhtml\+xml)/.test(type))||(kind==='image'&&!/^image\/(jpeg|png|webp)(?:;|$)/.test(type))||(kind==='reader'&&!/^application\/json(?:;|$)/.test(type))||Number(response.headers['content-length']||0)>max){response.destroy();reject(new NewsError(413,'Formato não suportado ou arquivo muito grande na origem.'));return;}
         const chunks:Buffer[]=[];let size=0;
         response.on('data',(chunk:Buffer)=>{size+=chunk.length;if(size>max){request.destroy();reject(new NewsError(413,'Arquivo da origem excede o limite.'));}else chunks.push(chunk);});
         response.on('end',()=>resolve({bytes:Buffer.concat(chunks),type,status}));response.on('error',()=>reject(new NewsError(422,'Falha ao receber conteúdo da origem.')));

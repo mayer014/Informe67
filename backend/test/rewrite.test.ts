@@ -8,7 +8,7 @@ import {JSDOM} from 'jsdom';
 import {Pool} from 'pg';
 import {config} from 'dotenv';
 import sharp from 'sharp';
-import {extractSource,withCredits,normalizeSourceUrl,type Source} from '../src/rewrite/source.js';
+import {extractReaderSource,extractSource,withCredits,normalizeSourceUrl,type Source} from '../src/rewrite/source.js';
 import {isPublicAddress,downloadPublic} from '../src/rewrite/download.js';
 import {encryptSecret,decryptSecret,validateAI,publicAI,callAI,validateGenerated,assertRewritten,defaultAI} from '../src/rewrite/ai.js';
 import {createRewriteService,type RewriteService} from '../src/rewrite/service.js';
@@ -30,6 +30,13 @@ test('article extraction keeps source metadata and credits without running scrip
  const content=withCredits(generated.content,source);assert.match(content,/Fonte: Portal de origem, por Repórter Original/);assert.match(content,/03\/02\/2020/);assert.equal(withCredits(content,source),content);
  assert.equal(normalizeSourceUrl('https://portal.example/noticia?utm_source=test&z=2&a=1#x'),'https://portal.example/noticia?a=1&z=2');
  const safe=withCredits('<p>Texto</p>',{...source,title:'<script>x</script>',author:'<img onerror=evil>'});assert.equal(safe.includes('<script>'),false);assert.match(safe,/&lt;script&gt;/);
+});
+test('reader fallback extracts a complete Midiamax article and excludes related content',()=>{
+ const url='https://midiamax.com.br/cotidiano/2026/materia-teste/';
+ const content=`Menu e navegação\n\n# Matéria de teste do Midiamax\n\nResumo da matéria para contextualizar o acontecimento.\n\nRepórter Teste - 14/10/2026 - 08:48\n\n![Image 4: Temporal em Mato Grosso do Sul](https://cdn.midiamax.com.br/capa.webp)\n\n${paragraph}\n\n${paragraph}\n\n## Orientações\n\n${paragraph}\n\n## 💬 Fale com os jornalistas do Midiamax\n\nConteúdo institucional que não pertence à matéria.\n\n## Notícias Relacionadas\n\nOutra notícia.`;
+ const extracted=extractReaderSource(JSON.stringify({code:200,data:{title:'Matéria de teste do Midiamax',url,content}}),url);
+ assert.equal(extracted.siteName,'Midiamax');assert.equal(extracted.author,'Repórter Teste');assert.equal(extracted.publishedAt,'2026-10-14T12:48:00.000Z');assert.equal(extracted.imageUrl,'https://cdn.midiamax.com.br/capa.webp');assert.equal(extracted.imageCaption,'Temporal em Mato Grosso do Sul');assert.match(extracted.text,/melhoria no atendimento público/);assert.equal(extracted.text.includes('Conteúdo institucional'),false);assert.equal(extracted.text.includes('Outra notícia'),false);
+ assert.throws(()=>extractReaderSource(JSON.stringify({code:200,data:{title:'Teste',url:'https://evil.example/',content}}),url),{statusCode:422});
 });
 test('literal or almost literal AI output is refused instead of treating the source as rewritten',()=>{
  assert.throws(()=>assertRewritten({...generated,content:`<p>${source.text}</p>`},source),{statusCode:422});
