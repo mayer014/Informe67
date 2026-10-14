@@ -11,7 +11,7 @@ import sharp from 'sharp';
 import {extractReaderSource,extractSource,withCredits,normalizeSourceUrl,type Source} from '../src/rewrite/source.js';
 import {isPublicAddress,downloadPublic} from '../src/rewrite/download.js';
 import {encryptSecret,decryptSecret,validateAI,publicAI,callAI,validateGenerated,assertRewritten,defaultAI} from '../src/rewrite/ai.js';
-import {createRewriteService,type RewriteService} from '../src/rewrite/service.js';
+import {canRetryCapture,createRewriteService,type RewriteService} from '../src/rewrite/service.js';
 import {createNewsStore} from '../src/news/store.js';
 import {hashPassword} from '../src/admin/password.js';
 import {type AdminStore,type AdminUser} from '../src/admin/store.js';
@@ -37,6 +37,12 @@ test('reader fallback extracts a complete Midiamax article and excludes related 
  const extracted=extractReaderSource(JSON.stringify({code:200,data:{title:'Matéria de teste do Midiamax',url,content}}),url);
  assert.equal(extracted.siteName,'Midiamax');assert.equal(extracted.author,'Repórter Teste');assert.equal(extracted.publishedAt,'2026-10-14T12:48:00.000Z');assert.equal(extracted.imageUrl,'https://cdn.midiamax.com.br/capa.webp');assert.equal(extracted.imageCaption,'Temporal em Mato Grosso do Sul');assert.match(extracted.text,/melhoria no atendimento público/);assert.equal(extracted.text.includes('Conteúdo institucional'),false);assert.equal(extracted.text.includes('Outra notícia'),false);
  assert.throws(()=>extractReaderSource(JSON.stringify({code:200,data:{title:'Teste',url:'https://evil.example/',content}}),url),{statusCode:422});
+});
+test('a failed capture without extracted content can be queued again',()=>{
+ assert.equal(canRetryCapture({state:'error'}),true);
+ assert.equal(canRetryCapture({state:'error',source}),false);
+ assert.equal(canRetryCapture({state:'error',newsId:randomUUID()}),false);
+ assert.equal(canRetryCapture({state:'captured',source}),false);
 });
 test('literal or almost literal AI output is refused instead of treating the source as rewritten',()=>{
  assert.throws(()=>assertRewritten({...generated,content:`<p>${source.text}</p>`},source),{statusCode:422});
