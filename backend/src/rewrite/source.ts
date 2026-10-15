@@ -55,7 +55,9 @@ export function extractReaderSource(payload: string, expectedUrl: string): Sourc
   if(imageMatch){try{const parsed=new URL(imageMatch[2]);if(['http:','https:'].includes(parsed.protocol)&&!parsed.username&&!parsed.password)imageUrl=parsed.href;}catch{}}
   const text=markdownText(article.filter((line:string)=>line!==byline).join('\n'));
   if(text.length<150)throw new NewsError(422,'O leitor alternativo não encontrou uma matéria completa. Cole o texto manualmente.');
-  return {url,title:data.title.trim().slice(0,240),siteName:'Midiamax',author:match?.[1]?.trim()||null,publishedAt,text,imageUrl,imageCredit:null,imageCaption:imageMatch?.[1]?.trim().slice(0,500)||null};
+  const hostname=new URL(url).hostname.replace(/^www\./,'');
+  const siteName=hostname==='midiamax.com.br'||hostname.endsWith('.midiamax.com.br')?'Midiamax':hostname==='uol.com.br'||hostname.endsWith('.uol.com.br')?'UOL':hostname==='infomoney.com.br'||hostname.endsWith('.infomoney.com.br')?'InfoMoney':hostname;
+  return {url,title:data.title.trim().slice(0,240),siteName,author:match?.[1]?.trim()||null,publishedAt,text,imageUrl,imageCredit:null,imageCaption:imageMatch?.[1]?.trim().slice(0,500)||null};
 }
 export function creditsHtml(source: Source) {
   const author = source.author ? `, por ${escapeHtml(source.author)}` : '';

@@ -428,7 +428,12 @@ operam sobre esse mesmo rascunho. A publicação reutiliza as validações e per
 do módulo de Notícias. A regeneração atualiza o mesmo rascunho, conserva suas
 imagens e usa a versão anterior para solicitar uma nova redação. Publicações e
 agendamentos existentes não são sobrescritos pela regeneração. Caso
-a extração seja bloqueada ou incompleta, use **Colar texto manualmente**. Imagens
+a extração direta seja bloqueada ou incompleta, o servidor tenta um leitor
+alternativo que valida a URL da matéria antes de aceitar o conteúdo. Se as duas
+tentativas falharem, use **Colar texto manualmente**. Fontes acima do limite ficam
+disponíveis para edição com a contagem exata de caracteres e não chamam a IA até
+serem reduzidas. Campos editoriais longos devolvidos pela IA (resumo, títulos e
+descrição SEO) são reduzidos com segurança sem descartar o conteúdo principal. Imagens
 JPEG, PNG e WebP de até 5 MB são baixadas, validadas e salvas no armazenamento
 local; imagens ausentes não impedem o salvamento do texto. A recuperação de uma
 imagem pode ser repetida sem chamar a IA novamente; capas adicionadas pelo editor

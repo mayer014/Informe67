@@ -52,6 +52,15 @@ function normalizeGenerated(value:unknown):unknown{
     if(alternative)result.summary=alternative.trim().slice(0,500);
     else if(typeof result.content==='string')result.summary=sanitizeHtml(result.content,{allowedTags:[],allowedAttributes:{}}).replace(/\s+/g,' ').trim().slice(0,500);
   }
+  const shorten=(key:string,max:number)=>{
+    if(typeof result[key]!=='string')return;
+    const text=(result[key] as string).replace(/\s+/g,' ').trim();
+    if(text.length<=max){result[key]=text;return;}
+    const candidate=text.slice(0,max+1),boundary=Math.max(candidate.lastIndexOf('. '),candidate.lastIndexOf('! '),candidate.lastIndexOf('? '),candidate.lastIndexOf('; '));
+    const cut=boundary>=Math.floor(max*.55)?candidate.slice(0,boundary+1):text.slice(0,max).replace(/\s+\S*$/,'').trim();
+    result[key]=(cut||text.slice(0,max)).slice(0,max).trim();
+  };
+  shorten('title',240);shorten('summary',500);shorten('seoTitle',240);shorten('seoDescription',320);
   return result;
 }
 export function assertRewritten(result:Generated,source:Source){
@@ -64,8 +73,10 @@ export function assertRewritten(result:Generated,source:Source){
   if(original===rewritten||original.includes(rewritten)||(words.length>=40&&(copyCoverage>=0.45||chunkCoverage>=0.55)))throw new NewsError(422,'A IA copiou trechos demais da matéria original. O rascunho não foi aprovado. Clique em Reescrever novamente para gerar uma redação realmente nova.');
 }
 export function validateGenerated(value:unknown):Generated{
-  if(!value||typeof value!=='object'||Array.isArray(value))throw new NewsError(422,'A IA não entregou um resultado válido.');const b=value as Record<string,unknown>;
-  const text=(key:string,max:number)=>{if(typeof b[key]!=='string'||!(b[key] as string).trim()||(b[key] as string).length>max)throw new NewsError(422,`Resposta da IA inválida: ${key}.`);return(b[key] as string).trim();};
+  value=normalizeGenerated(value);
+  if(!value||typeof value!=='object'||Array.isArray(value))throw new NewsError(422,'A IA não entregou um objeto JSON válido. Nenhuma matéria foi criada.');const b=value as Record<string,unknown>;
+  const labels:Record<string,string>={title:'título',summary:'resumo',content:'conteúdo',seoTitle:'título SEO',seoDescription:'descrição SEO'};
+  const text=(key:string,max:number)=>{if(typeof b[key]!=='string')throw new NewsError(422,`A IA não devolveu o campo ${labels[key]||key}. Nenhuma matéria foi criada.`);if(!(b[key] as string).trim())throw new NewsError(422,`A IA devolveu o campo ${labels[key]||key} vazio. Nenhuma matéria foi criada.`);if((b[key] as string).length>max)throw new NewsError(422,`A IA devolveu ${labels[key]||key} com ${(b[key] as string).length} caracteres; o máximo é ${max}. Nenhuma matéria foi criada.`);return(b[key] as string).trim();};
   const content=sanitizeContent(text('content',150000));if(content.replace(/<[^>]*>/g,'').trim().length<100)throw new NewsError(422,'O texto gerado está incompleto.');
   if(!Array.isArray(b.tags)||b.tags.length>20||b.tags.some(t=>typeof t!=='string'||t.length>80||!slugify(t)||slugify(t).length>100)||!Array.isArray(b.warnings)||b.warnings.length>20||b.warnings.some(w=>typeof w!=='string'||w.length>500))throw new NewsError(422,'Tags ou observações da IA inválidas.');
   return{title:text('title',240),summary:text('summary',500),content,tags:b.tags as string[],seoTitle:text('seoTitle',240),seoDescription:text('seoDescription',320),warnings:b.warnings as string[]};
@@ -81,7 +92,7 @@ export async function callAI(config:AIConfig,source:Source,fetcher:typeof fetch=
   else{endpoint='https://api.anthropic.com/v1/messages';headers={'x-api-key':secret,'anthropic-version':'2023-06-01'};body={model:config.model,max_tokens:8192,system,messages:[{role:'user',content:prompt}]};}
   let response:Response;try{response=await fetcher(endpoint,{method:'POST',headers:{'Content-Type':'application/json',...headers},body:JSON.stringify(body),signal:AbortSignal.timeout(90000),redirect:'error'});}catch{throw new NewsError(502,'A IA não respondeu dentro do prazo. Confira o histórico antes de tentar novamente.');}
   if(response.status===404)throw new NewsError(400,`O modelo ${config.model} não está disponível na sua conta. Escolha um modelo disponível em Configurações e teste a conexão.`);
-  if(!response.ok)throw new NewsError(response.status===429?429:response.status===413?413:502,response.status===401||response.status===403?'A IA recusou a chave ou as permissões. Revise Configurações.':response.status===429?'Limite do provedor atingido. Aguarde antes de tentar novamente.':response.status===413?'A matéria excede o limite de tokens aceito pelo provedor. Reduza o texto na prévia antes de tentar novamente.':'A IA recusou a solicitação. Confira o modelo e a disponibilidade do provedor.');
+  if(!response.ok){const retry=response.headers.get('retry-after'),wait=retry&&/^\d+(?:\.\d+)?$/.test(retry)?` Tente novamente em aproximadamente ${Math.ceil(Number(retry))} segundos.`:' Aguarde um pouco antes de tentar novamente.';throw new NewsError(response.status===429?429:response.status===413?413:502,response.status===401||response.status===403?'A IA recusou a chave ou as permissões. Revise Configurações.':response.status===429?`Limite temporário do provedor atingido.${wait}`:response.status===413?'A matéria excede o limite de tokens aceito pelo provedor. Reduza o texto na prévia antes de tentar novamente.':`A IA recusou a solicitação (HTTP ${response.status}). Confira o modelo e a disponibilidade do provedor.`);}
   const reader=response.body?.getReader();if(!reader)throw new NewsError(422,'A IA retornou uma resposta vazia.');
   const chunks:Uint8Array[]=[];let size=0;
   try{while(true){const chunk=await reader.read();if(chunk.done)break;size+=chunk.value.length;if(size>2*1024*1024){await reader.cancel();throw new NewsError(422,'A resposta da IA excede o limite.');}chunks.push(chunk.value);}}catch(e){if(e instanceof NewsError)throw e;throw new NewsError(502,'A resposta da IA foi interrompida.');}
@@ -93,5 +104,5 @@ export async function callAI(config:AIConfig,source:Source,fetcher:typeof fetch=
   const reported=config.provider==='gemini'?data.usageMetadata:data.usage;
   const allowed=['promptTokenCount','candidatesTokenCount','totalTokenCount','cachedContentTokenCount','thoughtsTokenCount','input_tokens','output_tokens','cache_creation_input_tokens','cache_read_input_tokens','prompt_tokens','completion_tokens','total_tokens'];
   const usage:Record<string,unknown>={};for(const key of allowed)if(Number.isSafeInteger(reported?.[key])&&reported[key]>=0)usage[key]=reported[key];
-  const result=validateGenerated(normalizeGenerated(parsed));assertRewritten(result,source);return{result,usage};
+  const result=validateGenerated(parsed);assertRewritten(result,source);return{result,usage};
 }

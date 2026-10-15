@@ -38,6 +38,11 @@ test('reader fallback extracts a complete Midiamax article and excludes related 
  assert.equal(extracted.siteName,'Midiamax');assert.equal(extracted.author,'Repórter Teste');assert.equal(extracted.publishedAt,'2026-10-14T12:48:00.000Z');assert.equal(extracted.imageUrl,'https://cdn.midiamax.com.br/capa.webp');assert.equal(extracted.imageCaption,'Temporal em Mato Grosso do Sul');assert.match(extracted.text,/melhoria no atendimento público/);assert.equal(extracted.text.includes('Conteúdo institucional'),false);assert.equal(extracted.text.includes('Outra notícia'),false);
  assert.throws(()=>extractReaderSource(JSON.stringify({code:200,data:{title:'Teste',url:'https://evil.example/',content}}),url),{statusCode:422});
 });
+test('reader fallback accepts other public news domains while preserving the requested URL',()=>{
+ const url='https://economia.uol.com.br/noticias/teste.htm',content=`# Materia de teste\n\n${paragraph}\n\n${paragraph}`;
+ const extracted=extractReaderSource(JSON.stringify({code:200,data:{title:'Materia de teste',url,content}}),url);
+ assert.equal(extracted.siteName,'UOL');assert.equal(extracted.url,url);assert.ok(extracted.text.length>=150);
+});
 test('a failed capture without extracted content can be queued again',()=>{
  assert.equal(canRetryCapture({state:'error'}),true);
  assert.equal(canRetryCapture({state:'error',source}),false);
@@ -91,12 +96,14 @@ test('Groq, Gemini and Claude adapters isolate source instructions, use key head
  if(provider==='groq'){assert.equal(captured.url,'https://api.groq.com/openai/v1/chat/completions');assert.equal(captured.options.headers.Authorization,'Bearer test-only-api-key');assert.equal(captured.body.response_format.type,'json_object');assert.equal(captured.body.max_completion_tokens,4096);assert.equal(captured.body.messages[0].role,'system');assert.equal(response.usage.total_tokens,100);}
  await assert.rejects(callAI(setting,source,(async()=>new Response('secret provider error',{status:401})) as typeof fetch),{statusCode:502});
  }
- assert.throws(()=>validateGenerated({...generated,title:''}),{statusCode:422});assert.throws(()=>validateGenerated({...generated,content:'<p>short</p>'}),{statusCode:422});assert.equal(validateGenerated({...generated,content:generated.content+'<script>alert(1)</script><img src="https://external.example/a">'}).content.includes('<script>'),false);
+ assert.throws(()=>validateGenerated({...generated,title:''}),(error:any)=>error.statusCode===422&&error.message.includes('título vazio'));assert.throws(()=>validateGenerated({...generated,content:'<p>short</p>'}),{statusCode:422});assert.equal(validateGenerated({...generated,content:generated.content+'<script>alert(1)</script><img src="https://external.example/a">'}).content.includes('<script>'),false);
+ const bounded=validateGenerated({...generated,title:'Titulo muito longo '.repeat(30),summary:'Resumo detalhado. '.repeat(60),seoTitle:'SEO muito longo '.repeat(30),seoDescription:'Descricao extensa. '.repeat(40)});assert.ok(bounded.title.length<=240);assert.ok(bounded.summary.length<=500);assert.ok(bounded.seoTitle.length<=240);assert.ok(bounded.seoDescription.length<=320);assert.match(bounded.summary,/\.$/);
 });
 test('Groq handles free-plan rate limits, oversized input, truncated output and slash-qualified model names safely',async()=>{
  await assert.rejects(validateAI({...defaultAI,provider:'gemini',model:'test-model',apiKey:'gsk_test_only_key'}),(error:any)=>error.statusCode===400&&error.message.includes('Selecione Groq'));
  const setting=await validateAI({...defaultAI,provider:'groq',model:'meta-llama/model-name',apiKey:'test-only-api-key'});assert.equal(setting.model,'meta-llama/model-name');
  for(const status of [429,413])await assert.rejects(callAI(setting,source,(async()=>new Response('DO NOT EXPOSE PROVIDER SECRETS',{status})) as typeof fetch),(error:any)=>error.statusCode===status&&!error.message.includes('SECRETS'));
+ await assert.rejects(callAI(setting,source,(async()=>new Response('',{status:429,headers:{'retry-after':'7'}})) as typeof fetch),(error:any)=>error.statusCode===429&&error.message.includes('7 segundos'));
  await assert.rejects(callAI(setting,source,(async()=>new Response('model_not_found',{status:404})) as typeof fetch),(error:any)=>error.statusCode===400&&error.message.includes('não está disponível na sua conta'));
  let groqBody:any;const currentModel=await validateAI({...defaultAI,apiKey:'test-only-api-key'});await callAI(currentModel,source,(async(_url:any,options:any)=>{groqBody=JSON.parse(options.body);return new Response(JSON.stringify({choices:[{finish_reason:'stop',message:{content:JSON.stringify(generated)}}]}),{status:200});}) as typeof fetch);assert.equal(groqBody.model,'openai/gpt-oss-120b');assert.equal(groqBody.reasoning_effort,'low');assert.equal(groqBody.response_format.type,'json_schema');assert.equal(groqBody.response_format.json_schema.strict,true);assert.ok(groqBody.response_format.json_schema.schema.required.includes('summary'));
  const missingSummary={...generated} as Partial<typeof generated>;delete missingSummary.summary;const recovered=await callAI(setting,source,(async()=>new Response(JSON.stringify({choices:[{finish_reason:'stop',message:{content:JSON.stringify(missingSummary)}}]}),{status:200})) as typeof fetch);assert.equal(recovered.result.summary,generated.seoDescription);
@@ -124,6 +131,14 @@ test('rewrite interface resumes history, requires a category and opens the gener
  const api=async(path:string,options?:any)=>{if(path==='news/rewrite')return{items:[job]};if(path==='news/options')return{categories:[{id:categoryId,name:'Campo Grande'}]};if(path.endsWith('/generate')){assert.equal(JSON.parse(options.body).categoryId,categoryId);writes++;return{...job,state:'ready',newsId:'generated-news'};}return job;};
  const module=(w as any).RewriteModule.mount({root:w.document.querySelector('#root'),user:{permissions:['news.create','news.upload']},api,openNews:(id:string)=>opened=id,back:()=>{}});
  try{await new Promise(r=>setTimeout(r,20));[...w.document.querySelectorAll<HTMLButtonElement>('button')].find(b=>b.textContent==='Ver processamento')!.click();await new Promise(r=>setTimeout(r,20));const select=w.document.querySelector<HTMLSelectElement>('select[name="categoryId"]')!;assert.equal(select.options[1].textContent,'Campo Grande');assert.equal(select.required,true);select.value=categoryId;select.closest('form')!.dispatchEvent(new w.Event('submit',{cancelable:true}));await new Promise(r=>setTimeout(r,20));assert.equal(writes,1);[...w.document.querySelectorAll<HTMLButtonElement>('button')].find(b=>b.textContent==='Revisar e publicar no editor')!.click();assert.equal(opened,'generated-news');}
+ finally{module.dispose();w.close();}
+});
+test('rewrite interface explains an oversized source and shows the exact character counter',async()=>{
+ const dom=new JSDOM('<div id="root"></div>',{url:'http://localhost:3000/admin/',runScripts:'outside-only'}),w=dom.window;w.eval(readFileSync(new URL('../public/admin/rewrite.js',import.meta.url),'utf8'));
+ const oversized={...source,text:'Texto '.repeat(4000)},job={id:randomUUID(),url:source.url,state:'captured',source:oversized,warning:'O texto extraído tem 24.000 caracteres; o limite configurado é 20.000. A IA não foi chamada. Edite o texto da prévia para continuar.',diagnostic:{stage:'source',code:'source_too_large',sourceChars:24000,maxChars:20000},attempts:[],createdAt:new Date().toISOString()};
+ const api=async(path:string)=>path==='news/rewrite'?{items:[job]}:path==='news/options'?{categories:[]}:job;
+ const root=w.document.querySelector('#root')!,module=(w as any).RewriteModule.mount({root,user:{permissions:['news.create','news.upload']},api,openNews:()=>{},back:()=>{}});
+ try{await new Promise(r=>setTimeout(r,20));assert.match(root.textContent!,/A IA não foi chamada/);[...root.querySelectorAll<HTMLButtonElement>('button')].find(b=>b.textContent==='Ver processamento')!.click();await new Promise(r=>setTimeout(r,20));assert.match(root.textContent!,/limite configurado é 20.000/);const textarea=root.querySelector<HTMLTextAreaElement>('textarea[name="text"]')!;assert.equal(textarea.maxLength,20000);assert.match(root.querySelector('[data-source-count]')!.textContent!,/24.000 \/ 20.000/);}
  finally{module.dispose();w.close();}
 });
 test('rewrite click immediately shows progress, prevents duplicate requests and reports API errors beside the action',async()=>{
